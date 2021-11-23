@@ -24,6 +24,7 @@ import Prettyprinter
 import ContractExample.AtomicSwap qualified as Contracts.AtomicSwap
 import ContractExample.IntegrationTest qualified as Contracts.IntegrationTest
 import ContractExample.PayToWallet qualified as Contracts.PayToWallet
+import ContractExample.UniswapTest qualified as Contracts.UniswapTest
 import ContractExample.WaitForTx qualified as Contracts.WaitForTx
 import Data.OpenApi.Schema qualified as OpenApi
 import Data.Row
@@ -60,6 +61,7 @@ data ExampleContracts = UniswapInit
                       | PingPongAuto -- ^ Variant of 'PingPong' that starts the initialise phase automatically
                       | WaitForTx TxId
                       | IntegrationTest -- ^ Contract that runs a number of transactions (no user input)
+                      | UniswapTest -- ^ Contract that performs a swap from scratch using uniswap contract (no user input)
     deriving (Eq, Ord, Show, Generic)
     deriving anyclass (FromJSON, ToJSON, OpenApi.ToSchema)
 
@@ -88,6 +90,7 @@ instance HasDefinitions ExampleContracts where
                      , PingPong
                      , PingPongAuto
                      , IntegrationTest
+                     , UniswapTest
                      ]
     getContract = getExampleContracts
     getSchema = getExampleContractsSchema
@@ -108,6 +111,7 @@ getExampleContractsSchema = \case
     PingPongAuto        -> Builtin.endpointsToSchemas @Contracts.PingPong.PingPongSchema
     WaitForTx{}         -> Builtin.endpointsToSchemas @Empty
     IntegrationTest{}   -> Builtin.endpointsToSchemas @Empty
+    UniswapTest{}       -> Builtin.endpointsToSchemas @Empty
 
 getExampleContracts :: ExampleContracts -> SomeBuiltin
 getExampleContracts = \case
@@ -125,6 +129,7 @@ getExampleContracts = \case
     PingPongAuto        -> SomeBuiltin Contracts.PingPong.simplePingPongAuto
     WaitForTx txi       -> SomeBuiltin (Contracts.WaitForTx.waitForTx txi)
     IntegrationTest     -> SomeBuiltin Contracts.IntegrationTest.run
+    UniswapTest         -> SomeBuiltin Contracts.UniswapTest.run
 
 handlers :: SimulatorEffectHandlers (Builtin ExampleContracts)
 handlers =

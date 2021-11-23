@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE DerivingStrategies  #-}
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE NumericUnderscores  #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications    #-}
@@ -94,7 +95,7 @@ coinBTokenName = "Limu"
 
 -- | Create some sample tokens and distribute them to the current wallet
 -- setupTokens :: [(TokenName, Integer)] -> Contract (Maybe (Semigroup.Last Currency.OneShotCurrency)) Currency.CurrencySchema Currency.CurrencyError ()
-setupTokens :: [(TokenName, Integer)] -> Contract () Currency.CurrencySchema IError ()
+setupTokens :: [(TokenName, Integer)] -> Contract () Currency.CurrencySchema IError Currency.OneShotCurrency
 setupTokens tokenNames = do
     ownPK <- mapError @_ @_ CError $ Contract.ownPubKeyHash
     cur   <- mintContract ownPK tokenNames
@@ -108,6 +109,7 @@ setupTokens tokenNames = do
     let pkh = ownPK
     mapError @_ @_ CError $ mkTxConstraints @Void mempty (Constraints.mustPayToPubKey pkh v)
       >>= submitTxConfirmed . Constraints.adjustUnbalancedTx
+    return cur
 
     -- tell $ Just $ Semigroup.Last cur
 
@@ -121,31 +123,40 @@ startUniswap = do
 
 
 -- This is meant to run from start to finish
-fullSwapTest :: Contract () s IError ()
-fullSwapTest = mapError @_ @_ (CError . OtherError) $ do
+fullSwapTest :: Contract () Currency.CurrencySchema IError ()
+fullSwapTest = do
     -- TODO: Mint tokens
+    let mintAmount = 1_000_000_000
+    currencies <- setupTokens
+      [ (uniswapTokenName, 1)
+      , (coinATokenName, mintAmount)
+      , (coinBTokenName, mintAmount)
+      ]
+    let cs = Currency.currencySymbol currencies
+        coinA = Uniswap.mkCoin cs coinATokenName
+        coinB = Uniswap.mkCoin cs coinBTokenName
+    mapError @_ @_ (CError . OtherError) $ do
+      -- Initialize uniswap
+      uniswap <- startUniswap
 
-    -- Initialize uniswap
-    uniswap <- startUniswap
+      let cp = Uniswap.CreateParams coinA coinB 100_000 100_000
+      -- { cpCoinA   :: Coin A   -- ^ One 'Coin' of the liquidity pair.
+      -- , cpCoinB   :: Coin B   -- ^ The other 'Coin'.
+      -- , cpAmountA :: Amount A -- ^ Amount of liquidity for the first 'Coin'.
+      -- , cpAmountB :: Amount B -- ^ Amount of liquidity for the second 'Coin'.
+      -- }
+      _ <- Uniswap.create uniswap cp
 
-    let cp = Haskell.undefined
-    -- { cpCoinA   :: Coin A   -- ^ One 'Coin' of the liquidity pair.
-    -- , cpCoinB   :: Coin B   -- ^ The other 'Coin'.
-    -- , cpAmountA :: Amount A -- ^ Amount of liquidity for the first 'Coin'.
-    -- , cpAmountB :: Amount B -- ^ Amount of liquidity for the second 'Coin'.
-    -- }
-    _ <- Uniswap.create uniswap cp
+      -- { spCoinA   :: Coin A         -- ^ One 'Coin' of the liquidity pair.
+      -- , spCoinB   :: Coin B         -- ^ The other 'Coin'.
+      -- , spAmountA :: Amount A       -- ^ The amount the first 'Coin' that should be swapped.
+      -- , spAmountB :: Amount B       -- ^ The amount of the second 'Coin' that should be swapped.
+      -- }
+      let sp = Uniswap.SwapParams coinA coinB 1_000 0
+      _ <- Uniswap.swap uniswap sp
 
-    -- { spCoinA   :: Coin A         -- ^ One 'Coin' of the liquidity pair.
-    -- , spCoinB   :: Coin B         -- ^ The other 'Coin'.
-    -- , spAmountA :: Amount A       -- ^ The amount the first 'Coin' that should be swapped.
-    -- , spAmountB :: Amount B       -- ^ The amount of the second 'Coin' that should be swapped.
-    -- }
-    let sp = Uniswap.SwapParams Haskell.undefined Haskell.undefined Haskell.undefined Haskell.undefined
-    _ <- Uniswap.swap uniswap sp
-
-    -- Done
-    return ()
+      -- Done
+      return ()
 
 mintContract
     :: Ledger.PubKeyHash

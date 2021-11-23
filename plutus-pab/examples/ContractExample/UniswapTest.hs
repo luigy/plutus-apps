@@ -136,27 +136,18 @@ fullSwapTest = do
         coinA = Uniswap.mkCoin cs coinATokenName
         coinB = Uniswap.mkCoin cs coinBTokenName
     mapError @_ @_ (CError . OtherError) $ do
-      -- Initialize uniswap
+      logInfo @String "Start Uniswap"
       uniswap <- startUniswap
 
+      logInfo @String "Creating pool"
       let cp = Uniswap.CreateParams coinA coinB 100_000 100_000
-      -- { cpCoinA   :: Coin A   -- ^ One 'Coin' of the liquidity pair.
-      -- , cpCoinB   :: Coin B   -- ^ The other 'Coin'.
-      -- , cpAmountA :: Amount A -- ^ Amount of liquidity for the first 'Coin'.
-      -- , cpAmountB :: Amount B -- ^ Amount of liquidity for the second 'Coin'.
-      -- }
       _ <- Uniswap.create uniswap cp
 
-      -- { spCoinA   :: Coin A         -- ^ One 'Coin' of the liquidity pair.
-      -- , spCoinB   :: Coin B         -- ^ The other 'Coin'.
-      -- , spAmountA :: Amount A       -- ^ The amount the first 'Coin' that should be swapped.
-      -- , spAmountB :: Amount B       -- ^ The amount of the second 'Coin' that should be swapped.
-      -- }
+      logInfo @String "Performing a swap"
       let sp = Uniswap.SwapParams coinA coinB 1_000 0
       _ <- Uniswap.swap uniswap sp
 
-      -- Done
-      return ()
+      logInfo @String "DONE"
 
 mintContract
     :: Ledger.PubKeyHash

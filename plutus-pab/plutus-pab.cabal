@@ -269,12 +269,14 @@ executable plutus-pab-examples
         , data-default
         , freer-extras
         , freer-simple
+        , groom
         , lens
         , playground-common
         , plutus-contract
         , plutus-ledger
         , plutus-ledger-constraints
         , plutus-pab
+        , plutus-tx
         , plutus-use-cases
         , prettyprinter
         , purescript-bridge

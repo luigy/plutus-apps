@@ -1,29 +1,41 @@
-{-# LANGUAGE DataKinds          #-}
-{-# LANGUAGE DeriveAnyClass     #-}
-{-# LANGUAGE DeriveGeneric      #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE LambdaCase         #-}
-{-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE TypeApplications   #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE DeriveAnyClass      #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE DerivingStrategies  #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications    #-}
 
 module ContractExample.UniswapTest where
 
+-- import Control.Lens (review)
+import Control.Monad (return, (>>=))
 import Data.Aeson (FromJSON, ToJSON)
--- import Data.Map qualified as Map
+import Data.Map qualified as Map
+import Data.Maybe (Maybe (..))
 -- import Data.Semigroup qualified as Semigroup
+import Data.Monoid (mconcat, mempty, (<>))
+import Data.Text qualified as Text
 import Data.Void (Void)
 import GHC.Generics (Generic)
+import Ledger qualified as Ledger
 -- import Ledger.Ada qualified as Ada
+import Ledger.Address qualified as Address
 import Ledger.Constraints qualified as Constraints
+-- import Plutus.V1.Ledger.Tx (Tx (..), TxIn (..), TxOut (..), TxOutRef (..), TxOutTx (..))
 -- import Ledger.Scripts (Datum (..), Redeemer (..), unitRedeemer)
--- import Ledger.Tx (getCardanoTxId)
--- import Ledger.Typed.Scripts as Scripts
+import Ledger.Tx (TxOutRef (..), getCardanoTxId)
+import Ledger.Typed.Scripts as Scripts
 import Ledger.Value as Value
 import Plutus.Contract
 import Plutus.Contract as Contract hiding (throwError)
 import Plutus.Contracts.Currency qualified as Currency
 import Plutus.Contracts.PubKey qualified as PubKey
-import Prelude as Haskell
+import PlutusTx.AssocMap qualified
+import Prelude (Either (..), Eq, Integer, String, pure, show, ($), (.))
+import Prelude qualified as Haskell
+import Text.Groom (groom)
 
 data IError =
     PKError PubKey.PubKeyError
@@ -40,10 +52,9 @@ run = runError run' >>= \case
 run' :: Contract () Currency.CurrencySchema IError ()
 run' = do
     logInfo @Haskell.String "Starting uniswap test"
-    _ <- mapError CurrencyError $ setupTokens [("Uniswap", 1), ("Obsidian", 1000000), ("Limu", 1000000)]
-    return ()
     -- pkh <- mapError CError ownPubKeyHash
-    -- (txOutRef, ciTxOut, pkInst) <- mapError PKError (PubKey.pubKeyContract pkh (Ada.adaValueOf 10))
+    _ <- setupTokens [("Uniswap", 1), ("Obsidian", 1000000), ("Limu", 1000000)]
+    return ()
     -- logInfo @Haskell.String "pubKey contract complete:"
     -- logInfo txOutRef
     -- let lookups =
@@ -66,10 +77,11 @@ run' = do
 
 -- | Create some sample tokens and distribute them to the current wallet
 -- setupTokens :: [(TokenName, Integer)] -> Contract (Maybe (Semigroup.Last Currency.OneShotCurrency)) Currency.CurrencySchema Currency.CurrencyError ()
-setupTokens :: [(TokenName, Integer)] -> Contract () Currency.CurrencySchema Currency.CurrencyError ()
+setupTokens :: [(TokenName, Integer)] -> Contract () Currency.CurrencySchema IError ()
 setupTokens tokenNames = do
-    ownPK <- Contract.ownPubKeyHash
-    cur   <- Currency.mintContract ownPK tokenNames
+    ownPK <- mapError @_ @_ CError $ Contract.ownPubKeyHash
+    cur   <- mintContract ownPK tokenNames
+
     let cs = Currency.currencySymbol cur
         v  = mconcat [Value.singleton cs tn amount | (tn, _) <- tokenNames]
 
@@ -77,7 +89,7 @@ setupTokens tokenNames = do
     --     let pkh = walletPubKeyHash w
     --     when (pkh /= ownPK) $ do
     let pkh = ownPK
-    mkTxConstraints @Void mempty (Constraints.mustPayToPubKey pkh v)
+    mapError @_ @_ CError $ mkTxConstraints @Void mempty (Constraints.mustPayToPubKey pkh v)
       >>= submitTxConfirmed . Constraints.adjustUnbalancedTx
 
     -- tell $ Just $ Semigroup.Last cur
@@ -85,3 +97,38 @@ setupTokens tokenNames = do
   where
     amount = 1000000
 
+mintContract
+    :: Ledger.PubKeyHash
+    -> [(TokenName, Integer)]
+    -> Contract w s IError Currency.OneShotCurrency
+mintContract pkh amounts = do
+    -- (txOutRef, _ciTxOut, _pkInst) <- mapError PKError (PubKey.pubKeyContract pkh (Ada.adaValueOf 3))
+    utxos <- mapError @_ @_ CError $ utxosAt (Address.pubKeyHashAddress pkh)
+    txOutRef <- case Map.lookupMin utxos of
+        Nothing -> throwError $ CError $ OtherError $ Text.pack $ "No UTxO available " <> show (Address.pubKeyHashAddress pkh)
+        Just (txOutRef, _) -> return txOutRef
+    let theCurrency = mkCurrency txOutRef amounts
+        curVali     = Currency.curPolicy theCurrency
+        lookups     = Constraints.mintingPolicy curVali
+                        <> Constraints.unspentOutputs utxos
+        mintTx      = Constraints.mustSpendPubKeyOutput txOutRef
+                        <> Constraints.mustMintValue (Currency.mintedValue theCurrency)
+    mapError @_ @_ CError $ do
+      unbalancedTx <- mkTxConstraints @Scripts.Any lookups mintTx
+      logInfo @String "UnbalancedTx: "
+      logInfo @String $ groom unbalancedTx
+      balancedTx <- balanceTx unbalancedTx
+      logInfo @String "BalancedTx: "
+      logInfo @String $ groom balancedTx
+      tx <- submitBalancedTx balancedTx
+      -- tx <- submitUnbalancedTx unbalancedTx
+      -- tx <- submitTxConstraintsWith  lookups mintTx
+      _ <- awaitTxConfirmed (getCardanoTxId tx)
+      pure theCurrency
+
+mkCurrency :: TxOutRef -> [(TokenName, Integer)] -> Currency.OneShotCurrency
+mkCurrency (TxOutRef h i) amts =
+    Currency.OneShotCurrency
+        { Currency.curRefTransactionOutput = (h, i)
+        , Currency.curAmounts              = PlutusTx.AssocMap.fromList amts
+        }

@@ -40,7 +40,7 @@ run = runError run' >>= \case
 run' :: Contract () Currency.CurrencySchema IError ()
 run' = do
     logInfo @Haskell.String "Starting uniswap test"
-    _ <- mapError CurrencyError $ setupTokens [("Obsidian", 1000000), ("Limu", 1000000)]
+    _ <- mapError CurrencyError $ setupTokens [("Uniswap", 1), ("Obsidian", 1000000), ("Limu", 1000000)]
     return ()
     -- pkh <- mapError CError ownPubKeyHash
     -- (txOutRef, ciTxOut, pkInst) <- mapError PKError (PubKey.pubKeyContract pkh (Ada.adaValueOf 10))

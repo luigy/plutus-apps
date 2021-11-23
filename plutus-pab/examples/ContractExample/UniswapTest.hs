@@ -32,6 +32,7 @@ import Plutus.Contract
 import Plutus.Contract as Contract hiding (throwError)
 import Plutus.Contracts.Currency qualified as Currency
 import Plutus.Contracts.PubKey qualified as PubKey
+import Plutus.Contracts.Uniswap qualified as Uniswap
 import PlutusTx.AssocMap qualified
 import Prelude (Either (..), Eq, Integer, String, pure, show, ($), (.))
 import Prelude qualified as Haskell
@@ -53,7 +54,11 @@ run' :: Contract () Currency.CurrencySchema IError ()
 run' = do
     logInfo @Haskell.String "Starting uniswap test"
     -- pkh <- mapError CError ownPubKeyHash
-    _ <- setupTokens [("Uniswap", 1), ("Obsidian", 1000000), ("Limu", 1000000)]
+    _ <- setupTokens
+      [ (uniswapTokenName, 1)
+      , (coinATokenName, 1000000)
+      , (coinBTokenName, 1000000)
+      ]
     return ()
     -- logInfo @Haskell.String "pubKey contract complete:"
     -- logInfo txOutRef
@@ -74,6 +79,18 @@ run' = do
     --         logInfo @Haskell.String $ "Waiting for tx " <> show txi <> " to complete"
     --         mapError CError $ awaitTxConfirmed txi
     --         logInfo @Haskell.String "Tx confirmed. Integration test complete."
+
+-- TODO: This should be exported from Uniswap contract
+uniswapTokenName :: TokenName
+uniswapTokenName = "Uniswap"
+
+-- TODO: This should be exported from Uniswap contract
+coinATokenName :: TokenName
+coinATokenName = "Obsidian"
+
+-- TODO: This should be exported from Uniswap contract
+coinBTokenName :: TokenName
+coinBTokenName = "Limu"
 
 -- | Create some sample tokens and distribute them to the current wallet
 -- setupTokens :: [(TokenName, Integer)] -> Contract (Maybe (Semigroup.Last Currency.OneShotCurrency)) Currency.CurrencySchema Currency.CurrencyError ()
@@ -96,6 +113,39 @@ setupTokens tokenNames = do
 
   where
     amount = 1000000
+
+startUniswap :: Contract () s Text.Text Uniswap.Uniswap
+startUniswap = do
+    -- Setup all tokens and start Uniswap
+    Uniswap.start
+
+
+-- This is meant to run from start to finish
+fullSwapTest :: Contract () s IError ()
+fullSwapTest = mapError @_ @_ (CError . OtherError) $ do
+    -- TODO: Mint tokens
+
+    -- Initialize uniswap
+    uniswap <- startUniswap
+
+    let cp = Haskell.undefined
+    -- { cpCoinA   :: Coin A   -- ^ One 'Coin' of the liquidity pair.
+    -- , cpCoinB   :: Coin B   -- ^ The other 'Coin'.
+    -- , cpAmountA :: Amount A -- ^ Amount of liquidity for the first 'Coin'.
+    -- , cpAmountB :: Amount B -- ^ Amount of liquidity for the second 'Coin'.
+    -- }
+    _ <- Uniswap.create uniswap cp
+
+    -- { spCoinA   :: Coin A         -- ^ One 'Coin' of the liquidity pair.
+    -- , spCoinB   :: Coin B         -- ^ The other 'Coin'.
+    -- , spAmountA :: Amount A       -- ^ The amount the first 'Coin' that should be swapped.
+    -- , spAmountB :: Amount B       -- ^ The amount of the second 'Coin' that should be swapped.
+    -- }
+    let sp = Uniswap.SwapParams Haskell.undefined Haskell.undefined Haskell.undefined Haskell.undefined
+    _ <- Uniswap.swap uniswap sp
+
+    -- Done
+    return ()
 
 mintContract
     :: Ledger.PubKeyHash

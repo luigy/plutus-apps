@@ -14,19 +14,21 @@ module ContractExample.UniswapTest where
 import Control.Monad (return, (>>=))
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Map qualified as Map
-import Data.Maybe (Maybe (..))
+import Data.Maybe (Maybe (..), listToMaybe, maybe)
 -- import Data.Semigroup qualified as Semigroup
 import Data.Monoid (mconcat, mempty, (<>))
 import Data.Text qualified as Text
 import Data.Void (Void)
 import GHC.Generics (Generic)
-import Ledger qualified as Ledger
--- import Ledger.Ada qualified as Ada
-import Ledger.Address qualified as Address
+-- import Ledger qualified as Ledger
+import Ledger.Ada qualified as Ada
+-- import Ledger.Address qualified as Address
 import Ledger.Constraints qualified as Constraints
 -- import Plutus.V1.Ledger.Tx (Tx (..), TxIn (..), TxOut (..), TxOutRef (..), TxOutTx (..))
--- import Ledger.Scripts (Datum (..), Redeemer (..), unitRedeemer)
-import Ledger.Tx (TxOutRef (..), getCardanoTxId)
+import Ledger.Scripts (Datum (..), Redeemer (..), unitRedeemer)
+import Ledger.Tx (TxOutRef (..))
+import Ledger.Tx qualified as Tx
+-- import Ledger.Tx.CardanoAPI qualified as CardanoAPI
 import Ledger.Typed.Scripts as Scripts
 import Ledger.Value as Value
 import Plutus.Contract
@@ -54,32 +56,43 @@ run = runError run' >>= \case
 run' :: Contract () Currency.CurrencySchema IError ()
 run' = do
     logInfo @Haskell.String "Starting uniswap test"
+    fullSwapTest
     -- pkh <- mapError CError ownPubKeyHash
-    _ <- setupTokens
-      [ (uniswapTokenName, 1)
-      , (coinATokenName, 1000000)
-      , (coinBTokenName, 1000000)
-      ]
+    -- _ <- setupTokens
+    --   [ (uniswapTokenName, 1)
+    --   , (coinATokenName, 1000000)
+    --   , (coinBTokenName, 1000000)
+    --   ]
+    logInfo @Haskell.String "DONE"
     return ()
-    -- logInfo @Haskell.String "pubKey contract complete:"
-    -- logInfo txOutRef
-    -- let lookups =
-    --         Constraints.otherData (Datum $ getRedeemer unitRedeemer)
-    --         <> Constraints.unspentOutputs (maybe mempty (Map.singleton txOutRef) ciTxOut)
-    --         <> Constraints.otherScript  (Scripts.validatorScript pkInst)
-    --     constraints =
-    --         Constraints.mustSpendScriptOutput txOutRef unitRedeemer
-    --         <> Constraints.mustBeSignedBy pkh
-    -- result <- runError @_ @_ @ContractError $ submitTxConstraintsWith @Scripts.Any lookups constraints
-    -- case result of
-    --     Left err -> do
-    --         logWarn @Haskell.String "An error occurred. Integration test failed."
-    --         logWarn err
-    --     Right redeemingTx -> do
-    --         let txi = getCardanoTxId redeemingTx
-    --         logInfo @Haskell.String $ "Waiting for tx " <> show txi <> " to complete"
-    --         mapError CError $ awaitTxConfirmed txi
-    --         logInfo @Haskell.String "Tx confirmed. Integration test complete."
+
+-- Make it easier to locate an output
+lockFunds :: Contract () s IError [(Tx.TxOut, TxOutRef)]
+lockFunds = do
+    logInfo @Haskell.String "Starting integration test"
+    pkh <- mapError CError ownPubKeyHash
+    (txOutRef, ciTxOut, pkInst) <- mapError PKError (PubKey.pubKeyContract pkh (Ada.adaValueOf 3))
+    logInfo @Haskell.String "pubKey contract complete:"
+    logInfo txOutRef
+    let lookups =
+            Constraints.otherData (Datum $ getRedeemer unitRedeemer)
+            <> Constraints.unspentOutputs (maybe mempty (Map.singleton txOutRef) ciTxOut)
+            <> Constraints.otherScript  (Scripts.validatorScript pkInst)
+        constraints =
+            Constraints.mustSpendScriptOutput txOutRef unitRedeemer
+            <> Constraints.mustBeSignedBy pkh
+    result <- runError @_ @_ @ContractError $ submitTxConstraintsWith @Scripts.Any lookups constraints
+    case result of
+        Left err -> do
+            logWarn @Haskell.String "An error occurred. Integration test failed."
+            logWarn err
+            return []
+        Right redeemingTx -> do
+            let txi = Tx.getCardanoTxId redeemingTx
+            logInfo @Haskell.String $ "Waiting for tx " <> show txi <> " to complete"
+            mapError CError $ awaitTxConfirmed txi
+            logInfo @Haskell.String "Tx confirmed. Integration test complete."
+            return $ Tx.getCardanoTxOutRefs redeemingTx
 
 -- TODO: This should be exported from Uniswap contract
 uniswapTokenName :: TokenName
@@ -98,7 +111,17 @@ coinBTokenName = "Limu"
 setupTokens :: [(TokenName, Integer)] -> Contract () Currency.CurrencySchema IError Currency.OneShotCurrency
 setupTokens tokenNames = do
     ownPK <- mapError @_ @_ CError $ Contract.ownPubKeyHash
-    cur   <- mintContract ownPK tokenNames
+
+    -- (txOutRef, _ciTxOut, _pkInst) <- mapError PKError (PubKey.pubKeyContract pkh (Ada.adaValueOf 3))
+    -- utxos <- mapError @_ @_ CError $ utxosAt (Address.pubKeyHashAddress pkh)
+    -- txOutRef <- case Map.lookupMin utxos of
+    --     Nothing -> throwError $ CError $ OtherError $ Text.pack $ "No UTxO available " <> show (Address.pubKeyHashAddress pkh)
+    --     Just (txOutRef, _) -> return txOutRef
+    outputs <- lockFunds
+    output <- case listToMaybe outputs of
+        Nothing     -> throwError $ CError "No outputs were locked"
+        Just output -> return output
+    cur   <- mintContract output tokenNames
 
     let cs = Currency.currencySymbol cur
         v  = mconcat [Value.singleton cs tn amount | (tn, _) <- tokenNames]
@@ -150,19 +173,17 @@ fullSwapTest = do
       logInfo @String "DONE"
 
 mintContract
-    :: Ledger.PubKeyHash
+    :: (Tx.TxOut, TxOutRef)
     -> [(TokenName, Integer)]
     -> Contract w s IError Currency.OneShotCurrency
-mintContract pkh amounts = do
-    -- (txOutRef, _ciTxOut, _pkInst) <- mapError PKError (PubKey.pubKeyContract pkh (Ada.adaValueOf 3))
-    utxos <- mapError @_ @_ CError $ utxosAt (Address.pubKeyHashAddress pkh)
-    txOutRef <- case Map.lookupMin utxos of
-        Nothing -> throwError $ CError $ OtherError $ Text.pack $ "No UTxO available " <> show (Address.pubKeyHashAddress pkh)
-        Just (txOutRef, _) -> return txOutRef
+mintContract (txOut, txOutRef) amounts = do
     let theCurrency = mkCurrency txOutRef amounts
         curVali     = Currency.curPolicy theCurrency
         lookups     = Constraints.mintingPolicy curVali
-                        <> Constraints.unspentOutputs utxos
+                        -- <> Constraints.unspentOutputs utxos
+                        -- <> Constraints.unspentOutputs (either mempty (Map.singleton txOutRef) $ CardanoAPI.fromCardanoTxOut ciTxOut)
+                        -- <> Constraints.unspentOutputs (maybe mempty (Map.singleton txOutRef) ci)
+                        <> Constraints.unspentOutputs (maybe mempty (Map.singleton txOutRef) $ Tx.fromTxOut txOut)
         mintTx      = Constraints.mustSpendPubKeyOutput txOutRef
                         <> Constraints.mustMintValue (Currency.mintedValue theCurrency)
     mapError @_ @_ CError $ do
@@ -175,7 +196,7 @@ mintContract pkh amounts = do
       tx <- submitBalancedTx balancedTx
       -- tx <- submitUnbalancedTx unbalancedTx
       -- tx <- submitTxConstraintsWith  lookups mintTx
-      _ <- awaitTxConfirmed (getCardanoTxId tx)
+      _ <- awaitTxConfirmed (Tx.getCardanoTxId tx)
       pure theCurrency
 
 mkCurrency :: TxOutRef -> [(TokenName, Integer)] -> Currency.OneShotCurrency

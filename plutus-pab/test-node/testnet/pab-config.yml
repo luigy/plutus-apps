@@ -13,6 +13,7 @@ pabWebserverConfig:
 
 walletServerConfig:
   baseUrl: http://localhost:8090
+  tag: RemoteWalletConfig
   wallet:
     getWallet: 1
 

@@ -117,10 +117,14 @@ setupTokens tokenNames = do
     -- txOutRef <- case Map.lookupMin utxos of
     --     Nothing -> throwError $ CError $ OtherError $ Text.pack $ "No UTxO available " <> show (Address.pubKeyHashAddress pkh)
     --     Just (txOutRef, _) -> return txOutRef
-    outputs <- lockFunds
-    output <- case listToMaybe outputs of
+    -- outputs <- lockFunds
+    -- output <- case listToMaybe outputs of
+    --     Nothing     -> throwError $ CError "No outputs were locked"
+    --     Just output -> return output
+    utxo <- mapError CError $ utxosAt $ Scripts.validatorAddress (PubKey.typedValidator ownPK)
+    output <- case listToMaybe $ Map.toList utxo of
         Nothing     -> throwError $ CError "No outputs were locked"
-        Just output -> return output
+        Just (a, b) -> return (b, a)
     cur   <- mintContract output tokenNames
 
     let cs = Currency.currencySymbol cur
@@ -173,19 +177,29 @@ fullSwapTest = do
       logInfo @String "DONE"
 
 mintContract
-    :: (Tx.TxOut, TxOutRef)
+    :: (Tx.ChainIndexTxOut, TxOutRef)
     -> [(TokenName, Integer)]
     -> Contract w s IError Currency.OneShotCurrency
 mintContract (txOut, txOutRef) amounts = do
+    ownPK <- mapError CError ownPubKeyHash
+    let pkInst = PubKey.typedValidator ownPK
+
     let theCurrency = mkCurrency txOutRef amounts
         curVali     = Currency.curPolicy theCurrency
         lookups     = Constraints.mintingPolicy curVali
                         -- <> Constraints.unspentOutputs utxos
                         -- <> Constraints.unspentOutputs (either mempty (Map.singleton txOutRef) $ CardanoAPI.fromCardanoTxOut ciTxOut)
                         -- <> Constraints.unspentOutputs (maybe mempty (Map.singleton txOutRef) ci)
-                        <> Constraints.unspentOutputs (maybe mempty (Map.singleton txOutRef) $ Tx.fromTxOut txOut)
-        mintTx      = Constraints.mustSpendPubKeyOutput txOutRef
+                        -- <> Constraints.unspentOutputs (maybe mempty (Map.singleton txOutRef) $ Tx.fromTxOut txOut)
+                        <> Constraints.unspentOutputs ((Map.singleton txOutRef) txOut)
+
+                        <> Constraints.otherData (Datum $ getRedeemer unitRedeemer)
+                        -- <> Constraints.unspentOutputs (maybe mempty (Map.singleton txOutRef) ciTxOut)
+                        <> Constraints.otherScript  (Scripts.validatorScript pkInst)
+        -- mintTx      = Constraints.mustSpendPubKeyOutput txOutRef
+        mintTx      = Constraints.mustSpendScriptOutput txOutRef unitRedeemer
                         <> Constraints.mustMintValue (Currency.mintedValue theCurrency)
+                        <> Constraints.mustBeSignedBy ownPK
     mapError @_ @_ CError $ do
       unbalancedTx <- mkTxConstraints @Scripts.Any lookups mintTx
       logInfo @String "UnbalancedTx: "

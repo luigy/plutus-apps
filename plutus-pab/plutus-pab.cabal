@@ -274,6 +274,7 @@ executable plutus-pab-examples
         , playground-common
         , plutus-contract
         , plutus-ledger
+        , plutus-ledger-api
         , plutus-ledger-constraints
         , plutus-pab
         , plutus-tx

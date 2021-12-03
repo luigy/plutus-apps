@@ -5,7 +5,7 @@ dbConfig:
 pabWebserverConfig:
   baseUrl: http://localhost:9080
   staticDir: plutus-pab-client/dist
-  permissiveCorsPolicy: False
+  permissiveCorsPolicy: True
   # Optional timeout (in seconds) for calls to endpoints that are not currently
   # available. If this is not set, calls to unavailable endpoints fail
   # immediately.

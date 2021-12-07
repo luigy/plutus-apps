@@ -148,7 +148,7 @@ doNotStoreTxs = property $ do
   ((tip, block), state) <- forAll $ Gen.runTxGenState Gen.genNonEmptyBlock
   result <- liftIO $ Sqlite.withConnection ":memory:" $ \conn -> do
     Sqlite.runBeamSqlite conn $ autoMigrate Sqlite.migrationBackend checkedSqliteDb
-    liftIO $ runChainIndex conn $ do
+    runChainIndex conn $ do
       appendBlock tip block BlockProcessOption{bpoStoreTxs=False}
       tx <- txFromTxId (view citxTxId (head block))
       utxosFromAddr <- utxoSetFromBlockAddrs block
@@ -168,5 +168,4 @@ runChainIndex
   -> IO (Either ChainIndexError a)
 runChainIndex conn action = do
   stateTVar <- newTVarIO mempty
-  (r, _) <- runChainIndexEffects (RunRequirements nullTracer stateTVar conn 10) action
-  pure r
+  runChainIndexEffects (RunRequirements nullTracer stateTVar conn 10) action

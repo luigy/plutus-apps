@@ -13,42 +13,38 @@
 -}
 module Plutus.ChainIndex.App(main, runMain) where
 
-import Control.Concurrent.STM qualified as STM
 import Control.Exception (throwIO)
-import Control.Monad.Freer (Eff, send)
-import Control.Monad.Freer.Extras (LogMsg (..))
-import Control.Monad.Freer.Extras.Beam (BeamEffect, BeamLog (..))
-import Control.Monad.Freer.Extras.Log (LogLevel (..), LogMessage (..))
+import Control.Lens (unto)
+import Control.Monad.Freer (Eff, reinterpret, runM, send)
+import Control.Monad.Freer.Extras (raiseEnd)
+import Control.Monad.Freer.Extras.Beam (BeamEffect)
+import Control.Monad.Freer.Extras.Log (LogLevel (..), LogMessage (..), LogMsg (..), handleLogWriter)
+import Control.Monad.Freer.Writer (runWriter)
 import Control.Tracer (nullTracer)
 import Data.Aeson qualified as A
 import Data.Foldable (for_, traverse_)
 import Data.Function ((&))
 import Data.Functor (void)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.Sequence ((<|))
+import Data.Sequence (Seq, (|>))
 import Data.Yaml qualified as Y
-import Database.Beam.Migrate.Simple (autoMigrate)
-import Database.Beam.Sqlite qualified as Sqlite
-import Database.Beam.Sqlite.Migrate qualified as Sqlite
-import Database.SQLite.Simple qualified as Sqlite
 import Options.Applicative (execParser)
 import Prettyprinter (Pretty (..))
 
 import Cardano.BM.Configuration.Model qualified as CM
-import Cardano.BM.Setup (setupTrace_)
-import Cardano.BM.Trace (Trace, logDebug, logError)
+import Cardano.BM.Trace (logError)
 
 import Cardano.Api qualified as C
 import Cardano.Protocol.Socket.Client (ChainSyncEvent (..), runChainSync)
 import Cardano.Protocol.Socket.Type (epochSlots)
-import Plutus.ChainIndex (ChainIndexLog (..), RunRequirements (..), runChainIndexEffects)
+import Plutus.ChainIndex (ChainIndexLog (..), RunRequirements (..), handleChainIndexEffects)
 import Plutus.ChainIndex.CommandLine (AppConfig (..), Command (..), applyOverrides, cmdWithHelpParser)
 import Plutus.ChainIndex.Compatibility (fromCardanoBlock, fromCardanoPoint, tipFromCardanoBlock)
 import Plutus.ChainIndex.Config qualified as Config
-import Plutus.ChainIndex.DbSchema (checkedSqliteDb)
 import Plutus.ChainIndex.Effects (ChainIndexControlEffect (..), ChainIndexQueryEffect (..), appendBlock, resumeSync,
                                   rollback)
 import Plutus.ChainIndex.Handlers (getResumePoints)
+import Plutus.ChainIndex.Lib (withRunRequirements)
 import Plutus.ChainIndex.Logging qualified as Logging
 import Plutus.ChainIndex.Server qualified as Server
 import Plutus.ChainIndex.Types (BlockProcessOption (..), pointSlot)
@@ -60,10 +56,17 @@ runChainIndex
   -> Eff '[ChainIndexQueryEffect, ChainIndexControlEffect, BeamEffect] a
   -> IO (Maybe a)
 runChainIndex runReq effect = do
-  (errOrResult, logMessages') <- runChainIndexEffects runReq effect
+  (errOrResult, logMessages') <-
+    runM
+    $ runWriter @(Seq (LogMessage ChainIndexLog))
+    $ reinterpret
+        (handleLogWriter @ChainIndexLog
+                          @(Seq (LogMessage ChainIndexLog)) $ unto pure)
+    $ handleChainIndexEffects runReq
+    $ raiseEnd effect
   (result, logMessages) <- case errOrResult of
       Left err ->
-        pure (Nothing, LogMessage Error (Err err) <| logMessages')
+        pure (Nothing, logMessages' |> LogMessage Error (Err err))
       Right result -> do
         pure (Just result, logMessages')
   -- Log all previously captured messages
@@ -142,7 +145,6 @@ main = do
       -- Initialise logging
       logConfig <- maybe Logging.defaultConfig Logging.loadConfig acLogConfigPath
       for_ acMinLogLevel $ \ll -> CM.setMinSeverity logConfig ll
-      (trace :: Trace IO ChainIndexLog, _) <- setupTrace_ logConfig "chain-index"
 
       -- Reading configuration file
       config <- applyOverrides acCLIConfigOverrides <$> case acConfigPath of
@@ -159,30 +161,11 @@ main = do
       putStrLn "\nChain Index config:"
       print (pretty config)
 
-      runMain trace config
+      runMain logConfig config
 
-runMain :: Trace IO ChainIndexLog -> Config.ChainIndexConfig -> IO ()
-runMain trace config = do
-  Sqlite.withConnection (Config.cicDbPath config) $ \conn -> do
-
-    -- Optimize Sqlite for write performance, halves the sync time.
-    -- https://sqlite.org/wal.html
-    Sqlite.execute_ conn "PRAGMA journal_mode=WAL"
-    Sqlite.runBeamSqliteDebug (logDebug trace . (BeamLogItem . SqlLog)) conn $ do
-      autoMigrate Sqlite.migrationBackend checkedSqliteDb
-
-    -- Automatically delete the input when an output from a matching input/output pair is deleted.
-    -- See reduceOldUtxoDb in Plutus.ChainIndex.Handlers
-    Sqlite.execute_ conn "DROP TRIGGER IF EXISTS delete_matching_input"
-    Sqlite.execute_ conn
-      "CREATE TRIGGER delete_matching_input AFTER DELETE ON unspent_outputs \
-      \BEGIN \
-      \  DELETE FROM unmatched_inputs WHERE input_row_tip__row_slot = old.output_row_tip__row_slot \
-      \                                 AND input_row_out_ref = old.output_row_out_ref; \
-      \END"
-
-    stateTVar <- STM.newTVarIO mempty
-    let runReq = RunRequirements trace stateTVar conn (Config.cicSecurityParam config)
+runMain :: CM.Configuration -> Config.ChainIndexConfig -> IO ()
+runMain logConfig config = do
+  withRunRequirements logConfig config $ \runReq -> do
 
     Just resumePoints <- runChainIndex runReq getResumePoints
 
